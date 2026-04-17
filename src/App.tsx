@@ -97,7 +97,7 @@ export default function App() {
           "Authorization": `Bearer ${GROQ_API_KEY}`
         },
         body: JSON.stringify({
-          model: "llama3-70b-8192",
+          model: "llama-3.3-70b-versatile",
           messages: [
             { role: "system", content: SYSTEM_PROMPT_GROQ },
             { role: "user", content: `Texto Usuario: ${description}\n\nBorrador JSON Gemini: ${geminiBorrador}` }
@@ -106,7 +106,10 @@ export default function App() {
         })
       });
 
-      if (!groqResponse.ok) throw new Error("Error en la API de Groq");
+      if (!groqResponse.ok) {
+        const errorData = await groqResponse.json().catch(() => null);
+        throw new Error(`Groq API Error: ${errorData?.error?.message || groqResponse.statusText}`);
+      }
 
       const groqData = await groqResponse.json();
       const finalJson = groqData.choices[0].message.content.replace(/```json|```/g, "").trim();
