@@ -53,12 +53,6 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    loadLocalFile(file);
-  };
-
   const loadLocalFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
       setError("Por favor, sube un archivo de imagen válido (JPG, PNG, WebP).");
@@ -72,53 +66,22 @@ export default function App() {
     setSuccessStatus(null);
   };
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragOver(true);
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) loadLocalFile(file);
   };
 
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      loadLocalFile(file);
-    }
-  };
-
-  const clearImage = () => {
-    setImage(null);
-    setImagePreview(null);
-    setResult(null);
-    setError(null);
-    setSuccessStatus(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  // Esta función debe ejecutarse cuando la IA termine de analizar la imagen
-  const procesarResultadoIA = (respuestaJSON: string) => {
-    try {
-        const datos = JSON.parse(respuestaJSON);
-        
-        // Verificamos si estamos dentro del entorno de SketchUp
-        if (typeof window.sketchup !== 'undefined') {
-            // Enviamos los datos al bridge.rb que creamos antes
-            window.sketchup.dibujar_geometria(datos);
-            setSuccessStatus("Geometría enviada directamente a SketchUp con éxito.");
-        } else {
-            console.log("Datos generados:", datos);
-            setSuccessStatus("Análisis completado. Abre esta interfaz dentro de SketchUp para enviar la geometría automáticamente.");
-        }
-    } catch (e) {
-        console.error("Error al parsear el JSON de la IA", e);
-        throw new Error("El modelo falló al devolver un JSON válido. Revisa los logs.");
+  const mandarASketchUp = (data: any) => {
+    if (window.sketchup && typeof window.sketchup.dibujar_geometria === 'function') {
+      try {
+        window.sketchup.dibujar_geometria(data);
+        setSuccessStatus("¡Enviado! La geometría se está dibujando en SketchUp.");
+      } catch (err) {
+        setError("Error al comunicar con el plugin de SketchUp.");
+      }
+    } else {
+      console.log("Bridge no detectado, imprimiendo datos:", data);
+      setSuccessStatus("Análisis listo. Abre esta web desde SketchUp para dibujar.");
     }
   };
 
@@ -131,28 +94,19 @@ export default function App() {
     setSuccessStatus(null);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("Missing GEMINI_API_KEY environment variable. Asegúrate de configurarla.");
-      }
+      const apiKey = process.env.GEMINI_API_KEY || ''; 
+      if (!apiKey) throw new Error("GEMINI_API_KEY no configurada en los Secrets.");
 
       const ai = new GoogleGenAI({ apiKey });
-      const reader = new FileReader();
 
-      const imagePromise = new Promise<{ mimeType: string, data: string }>((resolve, reject) => {
+      const reader = new FileReader();
+      const imageData = await new Promise<{ mimeType: string, data: string }>((resolve) => {
         reader.onloadend = () => {
-          const resultString = reader.result as string;
-          const base64Data = resultString.split(',')[1];
-          resolve({
-             mimeType: image.type,
-             data: base64Data
-          });
+          const base64 = (reader.result as string).split(',')[1];
+          resolve({ mimeType: image.type, data: base64 });
         };
-        reader.onerror = reject;
         reader.readAsDataURL(image);
       });
-
-      const imageData = await imagePromise;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.1-pro-preview",
@@ -163,7 +117,7 @@ export default function App() {
               mimeType: imageData.mimeType,
             }
           },
-          "Genera el análisis 3D conforme a las reglas solicitadas."
+          "Analiza la imagen y devuelve la geometría en el formato JSON especificado."
         ],
         config: {
           systemInstruction: SYSTEM_PROMPT,
@@ -172,190 +126,92 @@ export default function App() {
         }
       });
       
-      const responseText = response.text;
-      if (responseText) {
-         setResult(responseText);
-         procesarResultadoIA(responseText);
-      } else {
-         throw new Error("La respuesta del modelo está vacía.");
-      }
+      const text = response.text || '';
+      const cleanJson = text.replace(/```json|```/g, "").trim();
+      
+      setResult(cleanJson);
+      const parsedData = JSON.parse(cleanJson);
+      mandarASketchUp(parsedData);
 
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "Ocurrió un error al contactar el servicio de IA.");
+      setError(err.message || "Error al procesar la imagen.");
     } finally {
       setIsAnalyzing(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-red-500/30 selection:text-red-200">
-      {/* Navbar Minimalista */}
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans">
       <nav className="border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-red-600/10 p-2 rounded-lg border border-red-600/20">
-              <Box className="w-5 h-5 text-red-500" />
-            </div>
-            <h1 className="text-xl font-semibold tracking-tight text-neutral-200">
-              SketchUp <span className="text-neutral-500 font-light">AI Bridge</span>
-            </h1>
+            <Box className="w-5 h-5 text-red-500" />
+            <h1 className="text-xl font-semibold">SketchUp <span className="text-neutral-500 font-light">AI Bridge</span></h1>
           </div>
         </div>
       </nav>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-12">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-          
-          {/* Panel Izquierdo: Input */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="flex flex-col gap-6">
-            <div className="flex flex-col gap-2">
-              <h2 className="text-2xl font-medium tracking-tight">Carga tu referencia</h2>
-              <p className="text-neutral-400 text-sm">
-                Sube un plano, boceto a mano alzada o foto de un objeto. La IA extraerá los datos dimensionales para convertirlos en geometría en el entorno de SketchUp.
-              </p>
-            </div>
-
+            <h2 className="text-2xl font-medium tracking-tight">Referencia</h2>
             <div 
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`relative flex flex-col group items-center justify-center border-2 border-dashed rounded-xl p-8 transition-colors ${
-                isDragOver ? "border-red-500 bg-red-500/5" : "border-neutral-800 hover:border-neutral-700 bg-neutral-900/50 hover:bg-neutral-900"
-              } ${imagePreview ? "overflow-hidden border-solid border-neutral-800 p-2" : "min-h-[300px]"}`}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+              onDragLeave={() => setIsDragOver(false)}
+              onDrop={(e) => { e.preventDefault(); setIsDragOver(false); if(e.dataTransfer.files[0]) loadLocalFile(e.dataTransfer.files[0]); }}
+              className={`relative min-h-[300px] border-2 border-dashed rounded-xl flex items-center justify-center transition-all ${isDragOver ? "border-red-500 bg-red-500/5" : "border-neutral-800 hover:border-neutral-700 bg-neutral-900/50"}`}
             >
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleImageChange} 
-                accept="image/*"
-                className="hidden" 
-              />
-              
-              <AnimatePresence mode="wait">
-                {imagePreview ? (
-                  <motion.div 
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                    className="relative w-full aspect-auto rounded-lg overflow-hidden group"
-                  >
-                    <img 
-                      src={imagePreview} 
-                      alt="Referencia" 
-                      className="w-full max-h-[500px] object-contain bg-neutral-950" 
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-sm">
-                      <button 
-                        onClick={clearImage}
-                        className="p-3 bg-red-600 hover:bg-red-500 text-white rounded-full transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 font-medium"
-                      >
-                        <X className="w-5 h-5" />
-                        Quitar Imagen
-                      </button>
-                    </div>
-                  </motion.div>
-                ) : (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                    className="flex flex-col items-center text-center gap-4 cursor-pointer"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <div className="p-4 rounded-2xl bg-neutral-800/50 text-neutral-400 group-hover:text-red-400 group-hover:scale-110 transition-all">
-                      <Camera className="w-8 h-8" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-neutral-300">Arrastra una imagen aquí</p>
-                      <p className="text-sm text-neutral-500 mt-1">O haz clic para explorar archivos locales</p>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {imagePreview ? (
+                <div className="relative group p-2">
+                  <img src={imagePreview} className="max-h-[500px] object-contain rounded-lg shadow-2xl" alt="Preview" />
+                  <button onClick={() => { setImage(null); setImagePreview(null); }} className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity rounded-lg">
+                    <X className="w-8 h-8 text-white" />
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+                  <Camera className="w-10 h-10 mx-auto text-neutral-500 mb-2" />
+                  <p className="text-neutral-400 font-medium">Click o arrastra tu imagen</p>
+                </div>
+              )}
+              <input type="file" ref={fileInputRef} onChange={handleImageChange} className="hidden" accept="image/*" />
             </div>
 
             <button
               disabled={!image || isAnalyzing}
               onClick={analyzeImage}
-              className={`w-full h-14 flex items-center justify-center gap-3 rounded-lg text-lg font-medium transition-all ${
-                !image || isAnalyzing
-                  ? "bg-neutral-800 text-neutral-500 cursor-not-allowed"
-                  : "bg-neutral-100 text-neutral-900 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)] hover:bg-white active:scale-[0.98]"
-              }`}
+              className={`w-full h-14 rounded-lg font-bold flex items-center justify-center gap-2 transition-all ${!image || isAnalyzing ? "bg-neutral-800 text-neutral-500 cursor-not-allowed" : "bg-white text-black hover:scale-[1.01] active:scale-[0.99]"}`}
             >
               {isAnalyzing ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-neutral-500 border-t-transparent rounded-full animate-spin" />
-                  Analizando Imagen...
-                </>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-neutral-500 border-t-transparent rounded-full animate-spin" />
+                  Analizando...
+                </div>
               ) : (
-                <>
-                  <Play className="w-5 h-5 fill-current" />
-                  Procesar a 3D
-                </>
+                <><Play size={18} fill="black" /> Generar en SketchUp</>
               )}
             </button>
           </div>
 
-          {/* Panel Derecho: Consola y JSON */}
-          <div className="flex flex-col gap-6 h-full min-h-[500px]">
-            <div className="flex flex-col gap-2">
-              <h2 className="text-2xl font-medium tracking-tight">Consola del Bridge</h2>
-              <p className="text-neutral-400 text-sm">
-                El output JSON crudo que será interceptado por la API de Ruby en SketchUp.
-              </p>
-            </div>
-
-            <div className="flex-1 bg-[#0A0A0A] border border-neutral-800 rounded-xl overflow-hidden flex flex-col shadow-2xl relative">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800/60 bg-neutral-900/50">
-                <div className="flex items-center gap-2">
-                  <FileJson className="w-4 h-4 text-neutral-500" />
-                  <span className="text-xs font-mono font-medium text-neutral-400 uppercase tracking-widest">
-                    Response.json
-                  </span>
-                </div>
-                {result && (
-                  <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-                )}
-              </div>
-              
-              <div className="p-4 flex-1 overflow-auto bg-[#0A0A0A]">
+          <div className="flex flex-col gap-6">
+            <h2 className="text-2xl font-medium tracking-tight">Consola JSON</h2>
+            <div className="flex-1 bg-black border border-neutral-800 rounded-xl p-4 font-mono text-sm overflow-auto min-h-[400px] shadow-inner">
+              <AnimatePresence>
                 {error && (
-                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="p-4 rounded-lg bg-red-950/30 border border-red-900/50 flex items-start gap-3 mb-4">
-                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                    <p className="text-sm font-mono text-red-200">{error}</p>
+                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="text-red-400 mb-4 bg-red-900/20 p-3 rounded border border-red-900/50">
+                    <AlertCircle className="inline w-4 h-4 mr-2" /> {error}
                   </motion.div>
                 )}
-
                 {successStatus && (
-                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="p-4 rounded-lg bg-green-950/20 border border-green-900/50 flex items-start gap-3 mb-4">
-                    <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
-                    <p className="text-sm font-sans text-green-200">{successStatus}</p>
+                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="text-green-400 mb-4 bg-green-900/20 p-3 rounded border border-green-900/50">
+                    <CheckCircle2 className="inline w-4 h-4 mr-2" /> {successStatus}
                   </motion.div>
                 )}
-
-                {isAnalyzing ? (
-                  <div className="flex flex-col gap-3 font-mono text-sm opacity-50 animate-pulse pt-4">
-                    <div className="h-4 bg-neutral-800 rounded w-1/3"></div>
-                    <div className="h-4 bg-neutral-800 rounded w-1/4"></div>
-                    <div className="h-4 bg-neutral-800 rounded w-1/2"></div>
-                    <div className="h-4 bg-neutral-800 rounded w-2/5"></div>
-                  </div>
-                ) : result ? (
-                  <motion.pre 
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    className="font-mono text-sm leading-relaxed text-blue-300 whitespace-pre-wrap break-words"
-                  >
-                    {result}
-                  </motion.pre>
-                ) : (
-                  <div className="h-full flex items-center justify-center text-neutral-600 font-mono text-sm">
-                    {`// Esperando ejecución...`}
-                  </div>
-                )}
-              </div>
+              </AnimatePresence>
+              <pre className="text-blue-300 whitespace-pre-wrap">{result || "// Esperando análisis de imagen..."}</pre>
             </div>
           </div>
-
         </div>
       </main>
     </div>
