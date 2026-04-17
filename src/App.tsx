@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Box, Play, AlertCircle, CheckCircle2, X, Camera, MessageSquare } from 'lucide-react';
+import { Box, Play, AlertCircle, CheckCircle2, X, Camera, MessageSquare, Video } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- CONFIGURACIÓN ---
@@ -21,14 +21,14 @@ Analiza la imagen y genera un JSON con los componentes (cuboid o face).
 No te preocupes por la perfección absoluta, enfócate en capturar todas las piezas que veas.
 FORMATO: { "geometria": [ { "tipo": "cuboid", "puntos": [x,y,z], "dimensiones": [w,h,d] } ] }`;
 
-const SYSTEM_PROMPT_GROQ = `Eres un Ingeniero Senior de SketchUp. 
-Recibirás un borrador JSON de una IA visual y una descripción del usuario.
-Tu objetivo es:
-1. Validar que las piezas no estén flotando (ajustar coordenadas Z si es necesario).
-2. Si el usuario dio medidas específicas en el texto, PRIORIZARLAS sobre el JSON.
-3. Asegurar que el JSON sea válido y limpio.
-4. Si se mencionan materiales, añádelos como atributo "material" en cada pieza.
-Responde ÚNICAMENTE con el JSON final.`;
+const SYSTEM_PROMPT_GROQ = `Eres un Arquitecto e Ingeniero experto en 3D para SketchUp.
+Tu tarea es generar JSON de geometría.
+FORMATO EXACTO REQUERIDO: { "geometria": [ { "tipo": "cuboid", "puntos": [0,0,0], "dimensiones": [1,1,1] } ] }
+
+Reglas:
+1. Si recibes un "Borrador JSON Gemini" con datos, úsalo como molde, fíjalo para que no flote de forma ilógica, aplica las medidas del "Texto Usuario" y genera el JSON limpio.
+2. Si el "Borrador JSON Gemini" está VACÍO, significa que NO se mandó imagen. En ese caso, DEBES INVENTAR Y CREAR toda la geometría desde cero, usando la lógica espacial para materializar puramente lo que el "Texto Usuario" te describe.
+3. Responde ÚNICAMENTE con el código JSON. Nada de explicaciones, ni comillas Markdown.`;
 
 export default function App() {
   const [image, setImage] = useState<File | null>(null);
@@ -38,8 +38,54 @@ export default function App() {
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successStatus, setSuccessStatus] = useState<string | null>(null);
+
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    if (isCameraOpen) {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        .then((mediaStream) => {
+          stream = mediaStream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        })
+        .catch(() => {
+          setError("No se pudo acceder a la cámara. Revisa los permisos.");
+          setIsCameraOpen(false);
+        });
+    }
+
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isCameraOpen]);
+
+  const takePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const file = new File([blob], "captura.jpg", { type: "image/jpeg" });
+            setImage(file);
+            setImagePreview(URL.createObjectURL(file));
+            setIsCameraOpen(false);
+          }
+        }, "image/jpeg", 0.9);
+      }
+    }
+  };
 
   const mandarASketchUp = (data: any) => {
     if (window.sketchup?.dibujar_geometria) {
@@ -59,13 +105,16 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     setResult(null);
+    setSuccessStatus(null);
 
     try {
       // --- PASO 1: GEMINI (VISIÓN) ---
-      const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
       let geminiBorrador = "";
 
       if (image) {
+        if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY no configurada.");
+        const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+        
         const reader = new FileReader();
         const imageData = await new Promise<{ mimeType: string, data: string }>((resolve) => {
           reader.onloadend = () => resolve({ 
@@ -89,7 +138,9 @@ export default function App() {
         geminiBorrador = geminiResult.text || "";
       }
 
-      // --- PASO 2: GROQ (REFINAMIENTO LÓGICO) ---
+      // --- PASO 2: GROQ (REFINAMIENTO LÓGICO Y/O CREACIÓN) ---
+      if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY (dibujo) no configurada.");
+      
       const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -100,7 +151,7 @@ export default function App() {
           model: "llama-3.3-70b-versatile",
           messages: [
             { role: "system", content: SYSTEM_PROMPT_GROQ },
-            { role: "user", content: `Texto Usuario: ${description}\n\nBorrador JSON Gemini: ${geminiBorrador}` }
+            { role: "user", content: `Texto Usuario: ${description || "Sin descripción adicional."}\n\nBorrador JSON Gemini: ${geminiBorrador || "VACÍO (No hay imagen)"}` }
           ],
           temperature: 0.1
         })
@@ -112,10 +163,15 @@ export default function App() {
       }
 
       const groqData = await groqResponse.json();
-      const finalJson = groqData.choices[0].message.content.replace(/```json|```/g, "").trim();
+      const rawText = groqData.choices[0].message.content;
+      const finalJson = rawText.replace(/```json|```/g, "").trim();
       
       setResult(finalJson);
-      mandarASketchUp(JSON.parse(finalJson));
+      if (finalJson.startsWith('{') || finalJson.startsWith('[')) {
+        mandarASketchUp(JSON.parse(finalJson));
+      } else {
+        throw new Error("El JSON devuelto no es válido:\n" + finalJson);
+      }
 
     } catch (err: any) {
       setError(err.message || "Error en el procesamiento.");
@@ -137,22 +193,48 @@ export default function App() {
           <div className="space-y-6">
             <section>
               <h2 className="text-sm font-semibold uppercase tracking-widest text-neutral-500 mb-4">Referencia Visual</h2>
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                className="group relative h-64 border-2 border-dashed border-neutral-800 rounded-2xl flex items-center justify-center bg-neutral-900/30 hover:bg-neutral-900/50 hover:border-neutral-600 transition-all cursor-pointer overflow-hidden"
-              >
-                {imagePreview ? (
-                  <img src={imagePreview} className="w-full h-full object-contain p-4" alt="Preview" />
+              <div className="relative h-64 border-2 border-dashed border-neutral-800 rounded-2xl bg-neutral-900/30 overflow-hidden flex flex-col items-center justify-center transition-all">
+                
+                {isCameraOpen ? (
+                  <div className="absolute inset-0 bg-black z-10 flex flex-col">
+                    <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                    <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-4">
+                      <button onClick={(e) => { e.stopPropagation(); takePhoto(); }} className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-full font-bold shadow-lg transition-all">Capturar</button>
+                      <button onClick={(e) => { e.stopPropagation(); setIsCameraOpen(false); }} className="bg-neutral-800 hover:bg-neutral-700 text-white px-6 py-2 rounded-full font-bold shadow-lg transition-all">Cancelar</button>
+                    </div>
+                  </div>
+                ) : imagePreview ? (
+                  <div className="relative w-full h-full flex items-center justify-center p-4">
+                    <img src={imagePreview} className="max-w-full max-h-full object-contain" alt="Preview" />
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setImage(null); setImagePreview(null); if(fileInputRef.current) fileInputRef.current.value = ''; }} 
+                      className="absolute top-4 right-4 bg-black/60 hover:bg-red-500 text-white p-2 rounded-full transition-colors backdrop-blur-sm"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
                 ) : (
-                  <div className="text-center text-neutral-500 group-hover:text-neutral-300">
-                    <Camera className="w-12 h-12 mx-auto mb-2 opacity-20" />
-                    <p>Click para subir plano o boceto</p>
+                  <div className="flex w-full h-full divide-x divide-neutral-800">
+                    <div 
+                      onClick={() => fileInputRef.current?.click()} 
+                      className="flex-1 flex flex-col items-center justify-center group hover:bg-neutral-900/50 cursor-pointer transition-colors"
+                    >
+                      <Camera className="w-10 h-10 mb-2 opacity-30 group-hover:opacity-60 transition-opacity" />
+                      <p className="text-neutral-500 text-sm group-hover:text-neutral-300">Subir Archivo</p>
+                    </div>
+                    <div 
+                      onClick={() => setIsCameraOpen(true)}
+                      className="flex-1 flex flex-col items-center justify-center group hover:bg-neutral-900/50 cursor-pointer transition-colors"
+                    >
+                      <Video className="w-10 h-10 mb-2 opacity-30 group-hover:opacity-60 transition-opacity" />
+                      <p className="text-neutral-500 text-sm group-hover:text-neutral-300">Usar Cámara</p>
+                    </div>
                   </div>
                 )}
                 <input type="file" ref={fileInputRef} onChange={(e) => {
                   const file = e.target.files?.[0];
                   if(file) { setImage(file); setImagePreview(URL.createObjectURL(file)); }
-                }} className="hidden" />
+                }} className="hidden" accept="image/*" />
               </div>
             </section>
 
@@ -170,7 +252,7 @@ export default function App() {
             </section>
 
             <button
-              disabled={isAnalyzing || (!image && !description)}
+              disabled={isAnalyzing || (!image && !description.trim())}
               onClick={analyzeImage}
               className="w-full h-16 bg-white text-black rounded-2xl font-bold text-lg hover:scale-[1.02] active:scale-[0.98] disabled:bg-neutral-800 disabled:text-neutral-600 transition-all flex items-center justify-center gap-3 shadow-xl shadow-white/5"
             >
@@ -189,12 +271,12 @@ export default function App() {
               <AnimatePresence>
                 {error && (
                   <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="bg-red-500/10 border border-red-500/50 text-red-400 p-4 rounded-xl mb-4 flex gap-3">
-                    <AlertCircle size={18} /> {error}
+                    <AlertCircle size={18} className="flex-shrink-0" /> <span className="break-words">{error}</span>
                   </motion.div>
                 )}
                 {successStatus && (
                   <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="bg-green-500/10 border border-green-500/50 text-green-400 p-4 rounded-xl mb-4 flex gap-3">
-                    <CheckCircle2 size={18} /> {successStatus}
+                    <CheckCircle2 size={18} className="flex-shrink-0" /> {successStatus}
                   </motion.div>
                 )}
               </AnimatePresence>
