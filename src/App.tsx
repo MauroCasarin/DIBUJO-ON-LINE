@@ -57,7 +57,8 @@ export default function App() {
   };
 
   const mandarASketchUp = (data: any) => {
-    if (window.sketchup && typeof window.sketchup.dibujar_geometria === 'function') {
+    // Relajar validación typeof porque CEF/SketchUp a veces lo detecta como object/proxy
+    if (window.sketchup && window.sketchup.dibujar_geometria) {
       try {
         window.sketchup.dibujar_geometria(data);
         setSuccessStatus("¡Enviado a SketchUp correctamente!");
