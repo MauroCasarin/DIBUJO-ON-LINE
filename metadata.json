@@ -1,0 +1,6 @@
+{
+  "name": "DIBUJO-ON-LINE",
+  "description": "Herramienta que analiza imágenes y extrae su geometría en 3D para SketchUp usando IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
