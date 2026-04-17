@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { GoogleGenAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { Box, Play, AlertCircle, CheckCircle2, X, Camera } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 
 // Extensión global para el bridge con SketchUp
 declare global {
@@ -80,17 +80,7 @@ export default function App() {
       const apiKey = process.env.GEMINI_API_KEY || ''; 
       if (!apiKey) throw new Error("API Key no configurada.");
 
-      const genAI = new GoogleGenAI(apiKey);
-      
-      // Configuración del modelo con el nombre más estable y modo JSON
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash", 
-        systemInstruction: SYSTEM_PROMPT,
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-        }
-      });
+      const ai = new GoogleGenAI({ apiKey });
 
       const reader = new FileReader();
       const imageData = await new Promise<{ mimeType: string, data: string }>((resolve) => {
@@ -101,20 +91,27 @@ export default function App() {
         reader.readAsDataURL(image);
       });
 
-      const resultCall = await model.generateContent([
-        {
-          inlineData: {
-            data: imageData.data,
-            mimeType: imageData.mimeType,
-          }
-        },
-        "Genera la geometría JSON para esta imagen."
-      ]);
+      const response = await ai.models.generateContent({
+        model: "gemini-flash-latest",
+        contents: [
+          {
+            inlineData: {
+              data: imageData.data,
+              mimeType: imageData.mimeType,
+            }
+          },
+          "Genera la geometría JSON para esta imagen."
+        ],
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          responseMimeType: "application/json",
+          temperature: 0.1, 
+        }
+      });
       
-      const response = await resultCall.response;
-      const text = response.text();
+      const text = response.text;
       
-      setResult(text);
+      setResult(text || "");
       mandarASketchUp(JSON.parse(text));
 
     } catch (err: any) {
