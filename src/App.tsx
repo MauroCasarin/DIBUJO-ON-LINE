@@ -109,7 +109,7 @@ export default function App() {
       });
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-1.5-flash",
         contents: [
           {
             inlineData: {
